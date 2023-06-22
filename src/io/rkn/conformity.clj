@@ -189,8 +189,8 @@
   2. a structure with info which norm failed and for what reason.
 
   Run transaction for each element of txes collection otherwise."
-  [acc conn norm-attr norm-name txes ex sync-schema-timeout tx-instant]
-  (if (empty? txes)
+  [acc conn norm-attr norm-name txes ex sync-schema-timeout tx-instant some-txes-fn?]
+  (if (and (empty? txes) (not some-txes-fn?))
     (let [reason (or ex
                      (str "No transactions provided for norm "
                           norm-name))
@@ -223,17 +223,15 @@
   [acc conn norm-attr norm-map norm-name sync-schema-timeout tx-instant]
   (if (first-time-only-conforms-to? (db conn) norm-attr norm-name)
     acc
-    (let [{:keys [txes ex]} (get-norm conn norm-map norm-name)]
-      (handle-txes acc conn norm-attr norm-name txes ex sync-schema-timeout
-        tx-instant))))
+    (let [{:keys [txes txes-fn ex]} (get-norm conn norm-map norm-name)]
+      (handle-txes acc conn norm-attr norm-name txes ex sync-schema-timeout tx-instant (some? txes-fn)))))
 
 (defn handle-mutable-norm
   [acc conn norm-attr norm-map norm-name sync-schema-timeout tx-instant]
-  (let [{:keys [txes ex]} (get-norm conn norm-map norm-name)]
+  (let [{:keys [txes txes-fn ex]} (get-norm conn norm-map norm-name)]
     (if (conforms-to? (db conn) norm-attr norm-name (count txes))
       acc
-      (handle-txes acc conn norm-attr norm-name txes ex sync-schema-timeout
-        tx-instant))))
+      (handle-txes acc conn norm-attr norm-name txes ex sync-schema-timeout tx-instant (some? txes-fn)))))
 
 (defn reduce-norms
   "Reduces norms from a norm-map specified by a seq of norm-names into
