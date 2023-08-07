@@ -2,6 +2,8 @@
   (:require [datomic.api :refer [q db] :as d]
             [clojure.java.io :as io]))
 
+(def default-timeout-ms 120000)
+
 (def ^:deprecated default-conformity-attribute :confirmity/conformed-norms)
 (def conformity-ensure-norm-tx :conformity/ensure-norm-tx)
 
@@ -147,9 +149,7 @@
                        (index-attr norm-attr) tx-index
                        (with-tx-instant tx-instant tx)]
               _ (maybe-timeout-synch-schema conn timeout)
-              tx-result (if timeout
-                          (deref (d/transact-async conn [safe-tx]) timeout :timeout)
-                          @(d/transact conn [safe-tx]))]
+              tx-result (deref (d/transact-async conn [safe-tx]) (or timeout default-timeout-ms) :timeout)]
           (if (next (:tx-data tx-result))
             (conj acc {:norm-name norm-name
                        :tx-index tx-index
