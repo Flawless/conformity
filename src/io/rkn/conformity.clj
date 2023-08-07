@@ -136,31 +136,33 @@
 (defn reduce-txes
   "Reduces the seq of transactions for a norm into a transaction
   result accumulator"
-  ([acc conn norm-attr norm-name txes sync-schema-timeout]
-   (reduce-txes acc conn norm-attr norm-name txes sync-schema-timeout nil))
-  ([acc conn norm-attr norm-name txes sync-schema-timeout tx-instant]
+  ([acc conn norm-attr norm-name txes timeout]
+   (reduce-txes acc conn norm-attr norm-name txes timeout nil))
+  ([acc conn norm-attr norm-name txes timeout tx-instant]
    (reduce
-     (fn [acc [tx-index tx]]
-       (try
-         (let [safe-tx [conformity-ensure-norm-tx
-                        norm-attr norm-name
-                        (index-attr norm-attr) tx-index
-                        (with-tx-instant tx-instant tx)]
-               _ (maybe-timeout-synch-schema conn sync-schema-timeout)
-               tx-result @(d/transact conn [safe-tx])]
-           (if (next (:tx-data tx-result))
-             (conj acc {:norm-name norm-name
-                        :tx-index tx-index
-                        :tx-result tx-result})
-             acc))
-         (catch Throwable t
-           (let [reason (.getMessage t)
-                 data {:succeeded acc
-                       :failed {:norm-name norm-name
-                                :tx-index tx-index
-                                :reason reason}}]
-             (throw (ex-info reason data t))))))
-     acc (map-indexed vector txes))))
+    (fn [acc [tx-index tx]]
+      (try
+        (let [safe-tx [conformity-ensure-norm-tx
+                       norm-attr norm-name
+                       (index-attr norm-attr) tx-index
+                       (with-tx-instant tx-instant tx)]
+              _ (maybe-timeout-synch-schema conn timeout)
+              tx-result (if timeout
+                          (deref (d/transact-async conn [safe-tx]) timeout :timeout)
+                          @(d/transact conn [safe-tx]))]
+          (if (next (:tx-data tx-result))
+            (conj acc {:norm-name norm-name
+                       :tx-index tx-index
+                       :tx-result tx-result})
+            acc))
+        (catch Throwable t
+          (let [reason (.getMessage t)
+                data {:succeeded acc
+                      :failed {:norm-name norm-name
+                               :tx-index tx-index
+                               :reason reason}}]
+            (throw (ex-info reason data t))))))
+    acc (map-indexed vector txes))))
 
 (defn eval-txes-fn
   "Given a connection and a symbol referencing a function on the classpath...
@@ -189,7 +191,7 @@
   2. a structure with info which norm failed and for what reason.
 
   Run transaction for each element of txes collection otherwise."
-  [acc conn norm-attr norm-name txes ex sync-schema-timeout tx-instant some-txes-fn?]
+  [acc conn norm-attr norm-name txes ex timeout tx-instant some-txes-fn?]
   (if (and (empty? txes) (not some-txes-fn?))
     (let [reason (or ex
                      (str "No transactions provided for norm "
@@ -198,8 +200,7 @@
                 :failed {:norm-name norm-name
                          :reason reason}}]
       (throw (ex-info reason data)))
-    (reduce-txes acc conn norm-attr norm-name txes sync-schema-timeout
-      tx-instant)))
+    (reduce-txes acc conn norm-attr norm-name txes timeout tx-instant)))
 
 (defn first-time-only-conforms-to?
   "If a norm is supposed to be first-time-only/not-changeable then the decision whether
@@ -220,18 +221,18 @@
                    db conformity-attr norm)))))
 
 (defn handle-first-time-only-norm
-  [acc conn norm-attr norm-map norm-name sync-schema-timeout tx-instant]
+  [acc conn norm-attr norm-map norm-name timeout tx-instant]
   (if (first-time-only-conforms-to? (db conn) norm-attr norm-name)
     acc
     (let [{:keys [txes txes-fn ex]} (get-norm conn norm-map norm-name)]
-      (handle-txes acc conn norm-attr norm-name txes ex sync-schema-timeout tx-instant (some? txes-fn)))))
+      (handle-txes acc conn norm-attr norm-name txes ex timeout tx-instant (some? txes-fn)))))
 
 (defn handle-mutable-norm
-  [acc conn norm-attr norm-map norm-name sync-schema-timeout tx-instant]
+  [acc conn norm-attr norm-map norm-name timeout tx-instant]
   (let [{:keys [txes txes-fn ex]} (get-norm conn norm-map norm-name)]
     (if (conforms-to? (db conn) norm-attr norm-name (count txes))
       acc
-      (handle-txes acc conn norm-attr norm-name txes ex sync-schema-timeout tx-instant (some? txes-fn)))))
+      (handle-txes acc conn norm-attr norm-name txes ex timeout tx-instant (some? txes-fn)))))
 
 (defn reduce-norms
   "Reduces norms from a norm-map specified by a seq of norm-names into
@@ -239,19 +240,15 @@
   ([acc conn norm-attr norm-map norm-names]
    (reduce-norms acc conn norm-attr norm-map norm-names nil))
   ([acc conn norm-attr norm-map norm-names tx-instant]
-   (let [sync-schema-timeout (:conformity.setting/sync-schema-timeout norm-map)]
-     (reduce
-       (fn [acc norm-name]
-         (let [{:keys [requires first-time-only]} (get norm-map norm-name)
-               acc (cond-> acc
-                     requires (reduce-norms conn norm-attr norm-map requires
-                                tx-instant))]
-           (if first-time-only
-             (handle-first-time-only-norm acc conn norm-attr norm-map norm-name
-               sync-schema-timeout tx-instant)
-             (handle-mutable-norm acc conn norm-attr norm-map norm-name
-               sync-schema-timeout tx-instant))))
-       acc norm-names))))
+   (reduce
+    (fn [acc norm-name]
+      (let [{:keys [requires timeout-ms first-time-only]} (get norm-map norm-name)
+            acc (cond-> acc
+                  requires (reduce-norms conn norm-attr norm-map requires tx-instant))]
+        (if first-time-only
+          (handle-first-time-only-norm acc conn norm-attr norm-map norm-name timeout-ms tx-instant)
+          (handle-mutable-norm acc conn norm-attr norm-map norm-name timeout-ms tx-instant))))
+    acc norm-names)))
 
 (defn ensure-conforms
   "Ensure that norms represented as datoms are conformed-to (installed), be they
