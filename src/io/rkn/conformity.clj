@@ -1,6 +1,7 @@
 (ns io.rkn.conformity
-  (:require [datomic.api :refer [q db] :as d]
-            [clojure.java.io :as io]))
+  (:require
+   [clojure.java.io :as io]
+   [datomic.api :refer [db q] :as d]))
 
 (def default-timeout-ms 120000)
 
@@ -65,7 +66,7 @@
     (ffirst (q '[:find ?inst
                  :in $ ?tx
                  :where [?tx :db/txInstant ?inst]]
-              db tx))))
+               db tx))))
 
 (defn with-tx-instant
   "If instant is not nil, add it as the :db/txInstant attribute of transaction."
@@ -141,28 +142,32 @@
   ([acc conn norm-attr norm-name txes timeout]
    (reduce-txes acc conn norm-attr norm-name txes timeout nil))
   ([acc conn norm-attr norm-name txes timeout tx-instant]
-   (reduce
-    (fn [acc [tx-index tx]]
-      (try
-        (let [safe-tx [conformity-ensure-norm-tx
-                       norm-attr norm-name
-                       (index-attr norm-attr) tx-index
-                       (with-tx-instant tx-instant tx)]
-              _ (maybe-timeout-synch-schema conn timeout)
-              tx-result (deref (d/transact-async conn [safe-tx]) (or timeout default-timeout-ms) :timeout)]
-          (if (next (:tx-data tx-result))
-            (conj acc {:norm-name norm-name
-                       :tx-index tx-index
-                       :tx-result tx-result})
-            acc))
-        (catch Throwable t
-          (let [reason (.getMessage t)
-                data {:succeeded acc
-                      :failed {:norm-name norm-name
-                               :tx-index tx-index
-                               :reason reason}}]
-            (throw (ex-info reason data t))))))
-    acc (map-indexed vector txes))))
+   (println :norm-name norm-name)
+   (let [t (System/nanoTime)
+         res (reduce
+              (fn [acc [tx-index tx]]
+                (try
+                  (let [safe-tx [conformity-ensure-norm-tx
+                                 norm-attr norm-name
+                                 (index-attr norm-attr) tx-index
+                                 (with-tx-instant tx-instant tx)]
+                        _ (maybe-timeout-synch-schema conn timeout)
+                        tx-result (deref (d/transact-async conn [safe-tx]) (or timeout default-timeout-ms) :timeout)]
+                    (if (next (:tx-data tx-result))
+                      (conj acc {:norm-name norm-name
+                                 :tx-index tx-index
+                                 :tx-result tx-result})
+                      acc))
+                  (catch Throwable t
+                    (let [reason (.getMessage t)
+                          data {:succeeded acc
+                                :failed {:norm-name norm-name
+                                         :tx-index tx-index
+                                         :reason reason}}]
+                      (throw (ex-info reason data t))))))
+              acc (map-indexed vector txes))]
+     (println :tx-time (double (/ (- (System/nanoTime) t) 1e9)) "s.")
+     res)))
 
 (defn eval-txes-fn
   "Given a connection and a symbol referencing a function on the classpath...
@@ -192,7 +197,7 @@
 
   Run transaction for each element of txes collection otherwise."
   [acc conn norm-attr norm-name txes ex timeout tx-instant some-txes-fn?]
-  (if (and (empty? txes) (not some-txes-fn?))
+  (if (or ex (and (empty? txes) (not some-txes-fn?)))
     (let [reason (or ex
                      (str "No transactions provided for norm "
                           norm-name))
