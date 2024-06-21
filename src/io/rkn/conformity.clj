@@ -142,7 +142,6 @@
   ([acc conn norm-attr norm-name txes timeout]
    (reduce-txes acc conn norm-attr norm-name txes timeout nil))
   ([acc conn norm-attr norm-name txes timeout tx-instant]
-   (println :norm-name norm-name)
    (let [t (System/nanoTime)
          res (reduce
               (fn [acc [tx-index tx]]
@@ -166,7 +165,6 @@
                                          :reason reason}}]
                       (throw (ex-info reason data t))))))
               acc (map-indexed vector txes))]
-     (println :tx-time (double (/ (- (System/nanoTime) t) 1e9)) "s.")
      res)))
 
 (defn eval-txes-fn
